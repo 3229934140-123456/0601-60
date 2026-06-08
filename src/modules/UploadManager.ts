@@ -9,15 +9,17 @@ const defaultUploadConfig: UploadConfig = {
   headers: {}
 };
 
+interface UploadTask {
+    file: File;
+    xhr?: XMLHttpRequest;
+    mockTimer?: ReturnType<typeof setInterval>;
+    progress: UploadProgress;
+  }
+
 class UploadManager {
   private config: UploadConfig;
   private eventBus: EventBus;
-  private uploads: Map<string, {
-    file: File;
-    xhr: XMLHttpRequest;
-    abortController?: AbortController;
-    progress: UploadProgress;
-  }> = new Map();
+  private uploads: Map<string, UploadTask> = new Map();
   private drafts: Map<string, Draft> = new Map();
   private draftsStorageKey = 'edu_shortvideo_drafts';
 
@@ -48,13 +50,26 @@ class UploadManager {
     });
 
     if (!this.config.uploadUrl) {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         let loaded = 0;
         const total = videoFile.size;
         const startTime = Date.now();
 
+        const initialProgress: UploadProgress = {
+          loaded: 0,
+          total,
+          percent: 0,
+          speed: 0,
+          videoId
+        };
+
+        const mockTask: UploadTask = {
+          file: videoFile,
+          progress: initialProgress
+        };
+
         const interval = setInterval(() => {
-          loaded = Math.min(loaded + Math.floor(total * 0.1), total);
+          loaded = Math.min(loaded + Math.floor(total * 0.05), total);
           const percent = Math.round((loaded / total) * 100);
           const elapsed = (Date.now() - startTime) / 1000;
           const speed = loaded / (elapsed || 1);
@@ -67,11 +82,17 @@ class UploadManager {
             videoId
           };
 
+          mockTask.progress = progress;
+          this.uploads.set(videoId, mockTask);
+
           options.onProgress?.(progress);
           this.eventBus.emit('uploadProgress', progress);
 
           if (loaded >= total) {
             clearInterval(interval);
+            mockTask.mockTimer = undefined;
+            this.uploads.delete(videoId);
+
             this.eventBus.emit('uploadComplete', {
               videoId,
               videoUrl: `blob://${videoId}`
@@ -79,6 +100,9 @@ class UploadManager {
             resolve({ videoId, videoUrl: `blob://${videoId}` });
           }
         }, 200);
+
+        mockTask.mockTimer = interval;
+        this.uploads.set(videoId, mockTask);
       });
     }
 
@@ -109,6 +133,12 @@ class UploadManager {
             speed,
             videoId
           };
+
+          const uploadTask = this.uploads.get(videoId);
+          if (uploadTask) {
+            uploadTask.progress = progress;
+            this.uploads.set(videoId, uploadTask);
+          }
 
           options.onProgress?.(progress);
           this.eventBus.emit('uploadProgress', progress);
@@ -189,13 +219,15 @@ class UploadManager {
       description?: string;
       coverImage?: string;
       metadata?: Record<string, any>;
+      onProgress?: (progress: UploadProgress) => void;
     } = {}
   ): Promise<PublishResult> {
     try {
       const { videoId, videoUrl } = await this.uploadVideo(videoFile, {
         videoId: options.videoId,
         columnId: options.columnId,
-        metadata: options.metadata
+        metadata: options.metadata,
+        onProgress: options.onProgress
       });
 
       const videoInfo: VideoInfo = {
@@ -252,13 +284,19 @@ class UploadManager {
       title: options.title,
       description: options.description,
       coverImage: options.coverImage,
+      onProgress: options.onProgress
     });
   }
 
   cancelUpload(videoId: string): boolean {
     const upload = this.uploads.get(videoId);
     if (upload) {
-      upload.xhr.abort();
+      if (upload.xhr) {
+        upload.xhr.abort();
+      }
+      if (upload.mockTimer) {
+        clearInterval(upload.mockTimer);
+      }
       this.uploads.delete(videoId);
       return true;
     }
@@ -267,7 +305,12 @@ class UploadManager {
 
   cancelAllUploads(): void {
     this.uploads.forEach((upload) => {
-      upload.xhr.abort();
+      if (upload.xhr) {
+        upload.xhr.abort();
+      }
+      if (upload.mockTimer) {
+        clearInterval(upload.mockTimer);
+      }
     });
     this.uploads.clear();
   }

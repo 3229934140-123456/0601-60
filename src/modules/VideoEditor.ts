@@ -4,6 +4,13 @@ import { generateVideoThumbnail, generateId } from '../utils';
 class VideoEditor {
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
+  private processingVideo: HTMLVideoElement | null = null;
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+  private isProcessing: boolean = false;
+  private currentProcessId: string | null = null;
+  private audioContext: AudioContext | null = null;
+  private audioDestination: MediaStreamAudioDestinationNode | null = null;
 
   constructor() {
     if (typeof document !== 'undefined') {
@@ -16,98 +23,236 @@ class VideoEditor {
     videoFile: File,
     watermarkConfig: WatermarkConfig
   ): Promise<EditResult> {
-    return new Promise((resolve, reject) => {
-      const video = document.createElement('video');
-      const url = URL.createObjectURL(videoFile);
-
-      video.onloadedmetadata = async () => {
-        try {
-          const result = await this.processWithWatermark(
-            video,
-            videoFile,
-            watermarkConfig
-          );
-          URL.revokeObjectURL(url);
-          resolve(result);
-        } catch (error) {
-          URL.revokeObjectURL(url);
-          reject(error);
-        }
-      };
-
-      video.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('Failed to load video'));
-      };
-
-      video.src = url;
+    return this.processVideo(videoFile, {
+      watermark: watermarkConfig,
+      startTime: 0,
+      endTime: 0
     });
   }
 
-  private async processWithWatermark(
-    video: HTMLVideoElement,
-    originalFile: File,
-    config: WatermarkConfig
+  async trimVideo(
+    videoFile: File,
+    startTime: number,
+    endTime: number
+  ): Promise<{ videoFile: File; duration: number; coverImage: string; width: number; height: number }> {
+    const result = await this.processVideo(videoFile, {
+      startTime,
+      endTime,
+      watermark: null
+    });
+
+    return {
+      videoFile: result.videoFile,
+      duration: result.duration,
+      coverImage: result.coverImage,
+      width: result.width,
+      height: result.height
+    };
+  }
+
+  private async processVideo(
+    videoFile: File,
+    options: {
+      watermark: WatermarkConfig | null;
+      startTime: number;
+      endTime: number;
+    }
   ): Promise<EditResult> {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Cannot get canvas context');
+    if (this.isProcessing) {
+      throw new Error('Another video is being processed');
     }
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    this.isProcessing = true;
+    this.currentProcessId = generateId('process');
+    this.recordedChunks = [];
 
-    if (config.imageUrl) {
-      const watermarkImage = await this.loadImage(config.imageUrl);
-      const coverCanvas = document.createElement('canvas');
-      coverCanvas.width = canvas.width;
-      coverCanvas.height = canvas.height;
-      const coverCtx = coverCanvas.getContext('2d')!;
+    try {
+      const video = document.createElement('video');
+      video.muted = false;
+      video.playsInline = true;
+      (video as any).webkitPlaysInline = true;
 
-      video.currentTime = 1;
+      const videoUrl = URL.createObjectURL(videoFile);
+      video.src = videoUrl;
+
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error('Failed to load video'));
+      });
+
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      const totalDuration = video.duration;
+
+      const startTime = options.startTime || 0;
+      const endTime = options.endTime && options.endTime > 0 ? Math.min(options.endTime, totalDuration) : totalDuration;
+      const targetDuration = endTime - startTime;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d')!;
+
+      let watermarkImg: HTMLImageElement | null = null;
+      if (options.watermark?.imageUrl) {
+        watermarkImg = await this.loadImage(options.watermark.imageUrl);
+      }
+
+      const canvasStream = canvas.captureStream(30);
+
+      let combinedStream: MediaStream;
+      try {
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const source = audioCtx.createMediaElementSource(video);
+        const destination = audioCtx.createMediaStreamDestination();
+        source.connect(destination);
+        this.audioContext = audioCtx;
+        this.audioDestination = destination;
+
+        const audioTrack = destination.stream.getAudioTracks()[0];
+        const videoTrack = canvasStream.getVideoTracks()[0];
+
+        combinedStream = new MediaStream([videoTrack, audioTrack]);
+      } catch (e) {
+        combinedStream = canvasStream;
+      }
+
+      let mimeType = 'video/webm;codecs=vp9,opus';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm;codecs=vp8,opus';
+      }
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm';
+      }
+
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(combinedStream, {
+          mimeType,
+          videoBitsPerSecond: 4000000
+        });
+      } catch (e) {
+        recorder = new MediaRecorder(combinedStream);
+      }
+
+      this.mediaRecorder = recorder;
+      this.processingVideo = video;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.recordedChunks.push(event.data);
+        }
+      };
+
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+        recorder.onstop = () => {
+          const blob = new Blob(this.recordedChunks, { type: mimeType });
+          resolve(blob);
+        };
+        recorder.onerror = () => reject(new Error('Recording error'));
+      });
+
+      video.currentTime = startTime;
       await new Promise<void>((resolve) => {
         video.onseeked = () => resolve();
       });
 
-      coverCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      this.drawWatermarkImage(coverCtx, watermarkImage, config, canvas.width, canvas.height);
+      recorder.start(100);
 
-      const coverImage = coverCanvas.toDataURL('image/jpeg', 0.85);
+      await video.play();
+
+      const drawFrame = () => {
+        if (!this.isProcessing || this.currentProcessId !== this._currentProcessId) return;
+
+        ctx.drawImage(video, 0, 0, width, height);
+
+        if (options.watermark) {
+          if (watermarkImg) {
+            this.drawWatermarkImage(ctx, watermarkImg, options.watermark, width, height);
+          } else if (options.watermark.text) {
+            this.drawWatermarkText(ctx, options.watermark.text, options.watermark, width, height);
+          }
+        }
+
+        if (video.currentTime < endTime && !video.ended) {
+          requestAnimationFrame(drawFrame);
+        } else {
+          if (recorder.state === 'recording') {
+            recorder.stop();
+          }
+        }
+      };
+
+      requestAnimationFrame(drawFrame);
+
+      const recordedBlob = await recordingPromise;
+
+      video.pause();
+
+      const processedFile = new File(
+        [recordedBlob],
+        `processed_${Date.now()}.webm`,
+        { type: mimeType }
+      );
+
+      const processedUrl = URL.createObjectURL(processedFile);
+      const coverImage = await this.generateCover(processedFile, 0.5);
+      URL.revokeObjectURL(processedUrl);
+
+      URL.revokeObjectURL(videoUrl);
 
       return {
-        videoFile: originalFile,
+        videoFile: processedFile,
         coverImage,
-        duration: video.duration,
-        width: video.videoWidth,
-        height: video.videoHeight,
-        watermarkApplied: false
+        duration: targetDuration,
+        width,
+        height,
+        watermarkApplied: !!options.watermark
       };
+    } finally {
+      this.cleanupProcessing();
+    }
+  }
+
+  get _currentProcessId(): string | null {
+    return this.currentProcessId;
+  }
+
+  private cleanupProcessing(): void {
+    this.isProcessing = false;
+    this.currentProcessId = null;
+
+    if (this.processingVideo) {
+      this.processingVideo.pause();
+      this.processingVideo.src = '';
+      this.processingVideo = null;
     }
 
-    const coverCanvas = document.createElement('canvas');
-    coverCanvas.width = canvas.width;
-    coverCanvas.height = canvas.height;
-    const coverCtx = coverCanvas.getContext('2d')!;
+    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      try {
+        this.mediaRecorder.stop();
+      } catch (e) {}
+    }
+    this.mediaRecorder = null;
+    this.recordedChunks = [];
 
-    video.currentTime = 1;
-    await new Promise<void>((resolve) => {
-      video.onseeked = () => resolve();
-    });
+    if (this.audioContext) {
+      try {
+        this.audioContext.close();
+      } catch (e) {}
+      this.audioContext = null;
+    }
+    this.audioDestination = null;
+  }
 
-    coverCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    this.drawWatermarkText(coverCtx, config.text || '', config, canvas.width, canvas.height);
+  cancelProcessing(): boolean {
+    if (!this.isProcessing) return false;
+    this.cleanupProcessing();
+    return true;
+  }
 
-    const coverImage = coverCanvas.toDataURL('image/jpeg', 0.85);
-
-    return {
-      videoFile: originalFile,
-      coverImage,
-      duration: video.duration,
-      width: video.videoWidth,
-      height: video.videoHeight,
-      watermarkApplied: false
-    };
+  isProcessingVideo(): boolean {
+    return this.isProcessing;
   }
 
   async generateCover(videoFile: File, time: number = 1): Promise<string> {
@@ -150,32 +295,6 @@ class VideoEditor {
 
         URL.revokeObjectURL(url);
         resolve(covers);
-      };
-
-      video.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('Failed to load video'));
-      };
-
-      video.src = url;
-    });
-  }
-
-  async trimVideo(
-    videoFile: File,
-    startTime: number,
-    endTime: number
-  ): Promise<{ videoFile: File; duration: number }> {
-    return new Promise((resolve, reject) => {
-      const video = document.createElement('video');
-      const url = URL.createObjectURL(videoFile);
-
-      video.onloadedmetadata = () => {
-        resolve({
-          videoFile,
-          duration: endTime - startTime
-        });
-        URL.revokeObjectURL(url);
       };
 
       video.onerror = () => {
@@ -306,6 +425,7 @@ class VideoEditor {
   }
 
   destroy(): void {
+    this.cleanupProcessing();
     this.canvas = null;
     this.ctx = null;
   }
