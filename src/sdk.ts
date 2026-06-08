@@ -360,6 +360,14 @@ class EduShortVideoSDK {
     return this.uploadManager.getUploadProgress(videoId);
   }
 
+  getUploadTasks(type?: Parameters<typeof UploadManager.prototype.getUploadTasks>[0]): ReturnType<typeof UploadManager.prototype.getUploadTasks> {
+    return this.uploadManager.getUploadTasks(type);
+  }
+
+  getUploadTaskCount(): number {
+    return this.uploadManager.getUploadTaskCount();
+  }
+
   setUploadConfig(config: Parameters<typeof UploadManager.prototype.setConfig>[0]): void {
     this.uploadManager.setConfig(config);
   }
@@ -377,8 +385,16 @@ class EduShortVideoSDK {
     return this.uploadManager.getDraft(draftId);
   }
 
-  getDrafts(): Draft[] {
-    return this.uploadManager.getDrafts();
+  getDraftDetail(draftId: string): ReturnType<typeof UploadManager.prototype.getDraftDetail> {
+    return this.uploadManager.getDraftDetail(draftId);
+  }
+
+  getDrafts(status?: Parameters<typeof UploadManager.prototype.getDrafts>[0]): ReturnType<typeof UploadManager.prototype.getDrafts> {
+    return this.uploadManager.getDrafts(status);
+  }
+
+  getDraftCounts(): ReturnType<typeof UploadManager.prototype.getDraftCounts> {
+    return this.uploadManager.getDraftCounts();
   }
 
   deleteDraft(draftId: string): boolean {

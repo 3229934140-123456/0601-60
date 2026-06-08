@@ -40,6 +40,9 @@ class VideoProcessor {
   private isProcessed: boolean = false;
   private draftId: string | null = null;
 
+  private coverTime: number = 0.5;
+  private customCoverImage: string = '';
+
   constructor(
     videoEditor: VideoEditor,
     uploadManager: UploadManager,
@@ -156,7 +159,10 @@ class VideoProcessor {
       this.textWatermark || this.imageWatermark);
 
     if (!needsProcessing) {
-      const coverImage = await this.videoEditor.generateCover(this.originalVideoFile, 0.5);
+      let coverImage = this.customCoverImage;
+      if (!coverImage) {
+        coverImage = await this.videoEditor.generateCover(this.originalVideoFile, this.coverTime);
+      }
       const video = document.createElement('video');
       const url = URL.createObjectURL(this.originalVideoFile);
       const originalFile = this.originalVideoFile;
@@ -196,7 +202,9 @@ class VideoProcessor {
       trimStartTime: this.trimStartTime,
       trimEndTime: this.trimEndTime,
       textWatermark: this.textWatermark,
-      imageWatermark: this.imageWatermark
+      imageWatermark: this.imageWatermark,
+      coverTime: this.coverTime,
+      customCoverImage: this.customCoverImage
     });
 
     this.processedVideoFile = result.videoFile;
@@ -332,15 +340,25 @@ class VideoProcessor {
     this.trimEndTime = draft.trimEndTime || 0;
     this.textWatermark = draft.textWatermark;
     this.imageWatermark = draft.imageWatermark;
+    this.coverTime = draft.coverTime ?? 0.5;
+    this.customCoverImage = draft.customCoverImage || '';
+
+    const hasNewVideo = !!videoFile;
+    const hasDraftVideo = !!draft.videoFile;
 
     if (videoFile) {
       this.originalVideoFile = videoFile;
     } else if (draft.videoFile) {
       this.originalVideoFile = draft.videoFile;
+    } else {
+      this.originalVideoFile = null;
     }
 
-    if (draft.isProcessed && draft.processedVideoFile) {
-      this.processedVideoFile = draft.processedVideoFile;
+    const processedVideoAvailable = !!(draft.isProcessed && draft.processedVideoFile);
+    const needsReprocess = hasNewVideo || !processedVideoAvailable;
+
+    if (processedVideoAvailable && !needsReprocess) {
+      this.processedVideoFile = draft.processedVideoFile!;
       this.processedCoverImage = draft.processedCoverImage || '';
       this.processedDuration = draft.processedDuration || 0;
       this.processedWidth = draft.processedWidth || 0;
@@ -349,6 +367,11 @@ class VideoProcessor {
       this.isProcessed = true;
     } else {
       this.processedVideoFile = null;
+      this.processedCoverImage = '';
+      this.processedDuration = 0;
+      this.processedWidth = 0;
+      this.processedHeight = 0;
+      this.processedSize = 0;
       this.isProcessed = false;
     }
   }

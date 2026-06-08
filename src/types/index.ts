@@ -95,6 +95,21 @@ export interface UploadProgress {
   videoId?: string;
 }
 
+export type UploadTaskType = 'upload' | 'publish' | 'draftPublish';
+
+export interface UploadTaskInfo {
+  videoId: string;
+  fileName: string;
+  fileSize: number;
+  type: UploadTaskType;
+  progress: UploadProgress;
+  columnId?: string;
+  draftId?: string;
+  title?: string;
+}
+
+export type DraftStatus = 'pending' | 'processed' | 'publishFailed';
+
 export interface Draft {
   draftId: string;
   title: string;
@@ -120,9 +135,19 @@ export interface Draft {
   processedHeight?: number;
   processedSize?: number;
   isProcessed?: boolean;
+  status?: DraftStatus;
+  failReason?: string;
+  coverTime?: number;
+  customCoverImage?: string;
   createdAt: number;
   updatedAt: number;
   [key: string]: any;
+}
+
+export interface DraftDetail extends Draft {
+  videoAvailable: boolean;
+  processedVideoAvailable: boolean;
+  canPublish: boolean;
 }
 
 export interface Comment {

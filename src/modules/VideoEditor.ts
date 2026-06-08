@@ -130,6 +130,8 @@ class VideoEditor {
       trimEndTime?: number;
       textWatermark?: TextWatermarkConfig;
       imageWatermark?: ImageWatermarkConfig;
+      coverTime?: number;
+      customCoverImage?: string;
     }
   ): Promise<ProcessResult> {
     const watermark: CombinedWatermarkConfig = {
@@ -141,7 +143,11 @@ class VideoEditor {
     const hasTrim = !!(options.trimStartTime || options.trimEndTime);
 
     if (!hasWatermark && !hasTrim) {
-      const coverImage = await this.generateCover(videoFile, 0.5);
+      let coverImage = options.customCoverImage || '';
+      if (!coverImage) {
+        coverImage = await this.generateCover(videoFile, options.coverTime ?? 0.5);
+      }
+
       const video = document.createElement('video');
       const url = URL.createObjectURL(videoFile);
 
@@ -171,7 +177,9 @@ class VideoEditor {
     const result = await this.processVideo(videoFile, {
       startTime: options.trimStartTime || 0,
       endTime: options.trimEndTime || 0,
-      watermark
+      watermark,
+      coverTime: options.coverTime,
+      customCoverImage: options.customCoverImage
     });
 
     return {
@@ -193,6 +201,8 @@ class VideoEditor {
       watermark: CombinedWatermarkConfig | null;
       startTime: number;
       endTime: number;
+      coverTime?: number;
+      customCoverImage?: string;
     }
   ): Promise<EditResult> {
     if (this.isProcessing) {
@@ -336,11 +346,14 @@ class VideoEditor {
         { type: mimeType }
       );
 
-      const coverImage = await this.generateCoverWithWatermark(
-        processedFile,
-        options.watermark || undefined,
-        0.5
-      );
+      let coverImage = options.customCoverImage || '';
+      if (!coverImage) {
+        coverImage = await this.generateCoverWithWatermark(
+          processedFile,
+          options.watermark || undefined,
+          options.coverTime ?? 0.5
+        );
+      }
 
       URL.revokeObjectURL(videoUrl);
 

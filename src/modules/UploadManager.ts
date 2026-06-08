@@ -1,4 +1,4 @@
-import { UploadConfig, UploadProgress, Draft, VideoInfo, PublishResult } from '../types';
+import { UploadConfig, UploadProgress, UploadTaskType, UploadTaskInfo, Draft, DraftStatus, DraftDetail, VideoInfo, PublishResult } from '../types';
 import EventBus from '../core/EventBus';
 import { generateId } from '../utils';
 
@@ -14,6 +14,10 @@ interface UploadTask {
     xhr?: XMLHttpRequest;
     mockTimer?: ReturnType<typeof setInterval>;
     progress: UploadProgress;
+    type: UploadTaskType;
+    columnId?: string;
+    draftId?: string;
+    title?: string;
   }
 
 class UploadManager {
@@ -40,6 +44,9 @@ class UploadManager {
       onProgress?: (progress: UploadProgress) => void;
       columnId?: string;
       metadata?: Record<string, any>;
+      type?: UploadTaskType;
+      draftId?: string;
+      title?: string;
     } = {}
   ): Promise<{ videoId: string; videoUrl: string }> {
     const videoId = options.videoId || generateId('video');
@@ -54,7 +61,11 @@ class UploadManager {
 
     const uploadTask: UploadTask = {
       file: videoFile,
-      progress: initialProgress
+      progress: initialProgress,
+      type: options.type || 'upload',
+      columnId: options.columnId,
+      draftId: options.draftId,
+      title: options.title
     };
     this.uploads.set(videoId, uploadTask);
 
@@ -220,6 +231,7 @@ class UploadManager {
       onProgress?: (progress: UploadProgress) => void;
       draftId?: string;
       deleteDraftOnSuccess?: boolean;
+      type?: UploadTaskType;
     } = {}
   ): Promise<PublishResult> {
     try {
@@ -227,7 +239,10 @@ class UploadManager {
         videoId: options.videoId,
         columnId: options.columnId,
         metadata: options.metadata,
-        onProgress: options.onProgress
+        onProgress: options.onProgress,
+        type: options.type || 'publish',
+        draftId: options.draftId,
+        title: options.title
       });
 
       const videoInfo: VideoInfo = {
@@ -283,6 +298,7 @@ class UploadManager {
       onProgress?: (progress: UploadProgress) => void;
       draftId?: string;
       deleteDraftOnSuccess?: boolean;
+      type?: UploadTaskType;
     } = {}
   ): Promise<PublishResult> {
     return this.uploadWithProgress(videoFile, {
@@ -292,7 +308,8 @@ class UploadManager {
       coverImage: options.coverImage,
       onProgress: options.onProgress,
       draftId: options.draftId,
-      deleteDraftOnSuccess: options.deleteDraftOnSuccess
+      deleteDraftOnSuccess: options.deleteDraftOnSuccess,
+      type: options.type || 'publish'
     });
   }
 
@@ -328,13 +345,46 @@ class UploadManager {
     return upload ? { ...upload.progress } : null;
   }
 
+  getUploadTasks(type?: UploadTaskType): UploadTaskInfo[] {
+    let tasks = Array.from(this.uploads.values());
+
+    if (type) {
+      tasks = tasks.filter(t => t.type === type);
+    }
+
+    return tasks.map(task => ({
+      videoId: task.progress.videoId || '',
+      fileName: task.file.name,
+      fileSize: task.file.size,
+      type: task.type,
+      progress: { ...task.progress },
+      columnId: task.columnId,
+      draftId: task.draftId,
+      title: task.title
+    }));
+  }
+
+  getUploadTaskCount(): number {
+    return this.uploads.size;
+  }
+
   async saveDraft(draft: Omit<Draft, 'draftId' | 'createdAt' | 'updatedAt'>): Promise<Draft> {
     const now = Date.now();
+
+    let status: DraftStatus = 'pending';
+    if (draft.isProcessed && draft.processedVideoFile) {
+      status = 'processed';
+    }
+    if (draft.status) {
+      status = draft.status;
+    }
+
     const newDraft = {
       ...draft,
       draftId: generateId('draft'),
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      status
     } as Draft;
 
     this.drafts.set(newDraft.draftId, newDraft);
@@ -348,9 +398,18 @@ class UploadManager {
     const draft = this.drafts.get(draftId);
     if (!draft) return null;
 
+    let status: DraftStatus | undefined = undefined;
+    if (updates.isProcessed !== undefined) {
+      status = updates.isProcessed ? 'processed' : 'pending';
+    }
+    if (updates.status) {
+      status = updates.status;
+    }
+
     const updatedDraft: Draft = {
       ...draft,
       ...updates,
+      status: status ?? draft.status,
       draftId,
       updatedAt: Date.now()
     };
@@ -367,10 +426,75 @@ class UploadManager {
     return draft ? { ...draft } : null;
   }
 
-  getDrafts(): Draft[] {
-    return Array.from(this.drafts.values())
+  getDraftDetail(draftId: string): DraftDetail | null {
+    const draft = this.getDraft(draftId);
+    if (!draft) return null;
+
+    const videoAvailable = !!draft.videoFile;
+    const processedVideoAvailable = !!(draft.isProcessed && draft.processedVideoFile);
+    const canPublish = videoAvailable;
+
+    return {
+      ...draft,
+      videoAvailable,
+      processedVideoAvailable,
+      canPublish
+    };
+  }
+
+  getDrafts(status?: DraftStatus): Draft[] {
+    let drafts = Array.from(this.drafts.values());
+
+    if (status) {
+      drafts = drafts.filter(d => d.status === status);
+    }
+
+    return drafts
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map(draft => ({ ...draft }));
+  }
+
+  getDraftCounts(): { pending: number; processed: number; publishFailed: number; total: number } {
+    let pending = 0;
+    let processed = 0;
+    let publishFailed = 0;
+
+    this.drafts.forEach(draft => {
+      switch (draft.status) {
+        case 'processed':
+          processed++;
+          break;
+        case 'publishFailed':
+          publishFailed++;
+          break;
+        default:
+          pending++;
+      }
+    });
+
+    return {
+      pending,
+      processed,
+      publishFailed,
+      total: this.drafts.size
+    };
+  }
+
+  setDraftStatus(draftId: string, status: DraftStatus, failReason?: string): boolean {
+    const draft = this.drafts.get(draftId);
+    if (!draft) return false;
+
+    draft.status = status;
+    if (failReason !== undefined) {
+      draft.failReason = failReason;
+    }
+    draft.updatedAt = Date.now();
+
+    this.drafts.set(draftId, draft);
+    this.saveDrafts();
+    this.eventBus.emit('draftSave', draft);
+
+    return true;
   }
 
   deleteDraft(draftId: string): boolean {
