@@ -1,4 +1,25 @@
-import { SDKConfig, UserInfo, ThemeConfig, RecordingConfig, WatermarkConfig, UploadProgress, Draft, VideoInfo, VideoQuality, Comment, ReportData, SDKEventType, EventCallback, SDKEventDataMap, RecordingResult, EditResult, PublishResult } from './types';
+import {
+  SDKConfig,
+  UserInfo,
+  ThemeConfig,
+  RecordingConfig,
+  WatermarkConfig,
+  TextWatermarkConfig,
+  ImageWatermarkConfig,
+  UploadProgress,
+  Draft,
+  VideoInfo,
+  VideoQuality,
+  Comment,
+  ReportData,
+  SDKEventType,
+  EventCallback,
+  SDKEventDataMap,
+  RecordingResult,
+  EditResult,
+  PublishResult,
+  ProcessResult
+} from './types';
 
 import EventBus from './core/EventBus';
 import ThemeManager from './core/ThemeManager';
@@ -11,6 +32,7 @@ import UploadManager from './modules/UploadManager';
 import VideoPlayer from './modules/VideoPlayer';
 import CommentManager from './modules/CommentManager';
 import DataCallbackManager from './modules/DataCallbackManager';
+import VideoProcessor from './modules/VideoProcessor';
 
 import { generateId, formatDuration, formatFileSize } from './utils';
 
@@ -27,6 +49,7 @@ class EduShortVideoSDK {
   private videoPlayer: VideoPlayer;
   private commentManager: CommentManager;
   private dataCallbackManager: DataCallbackManager;
+  private videoProcessor: VideoProcessor;
 
   private initialized: boolean = false;
   private version: string = '1.0.0';
@@ -44,6 +67,7 @@ class EduShortVideoSDK {
     this.videoPlayer = new VideoPlayer(this.eventBus);
     this.commentManager = new CommentManager(this.eventBus);
     this.dataCallbackManager = new DataCallbackManager(this.eventBus);
+    this.videoProcessor = new VideoProcessor(this.videoEditor, this.uploadManager, this.eventBus);
 
     if (config.theme) {
       this.themeManager.setTheme(config.theme);
@@ -194,6 +218,115 @@ class EduShortVideoSDK {
 
   async applyWatermarkToImage(imageSrc: string, config: WatermarkConfig): Promise<string> {
     return this.videoEditor.applyWatermarkToImage(imageSrc, config);
+  }
+
+  async addTextWatermark(videoFile: File, config: TextWatermarkConfig): Promise<EditResult> {
+    return this.videoEditor.addTextWatermark(videoFile, config);
+  }
+
+  async addImageWatermark(videoFile: File, config: ImageWatermarkConfig): Promise<EditResult> {
+    return this.videoEditor.addImageWatermark(videoFile, config);
+  }
+
+  async addCombinedWatermark(
+    videoFile: File,
+    config: { textWatermark?: TextWatermarkConfig; imageWatermark?: ImageWatermarkConfig }
+  ): Promise<EditResult> {
+    return this.videoEditor.addCombinedWatermark(videoFile, config);
+  }
+
+  async processVideo(
+    videoFile: File,
+    options: {
+      trimStartTime?: number;
+      trimEndTime?: number;
+      textWatermark?: TextWatermarkConfig;
+      imageWatermark?: ImageWatermarkConfig;
+    }
+  ): Promise<ProcessResult> {
+    return this.videoEditor.processVideoFull(videoFile, options);
+  }
+
+  // ===== 成片处理工作流 =====
+  createVideoProcessor(videoFile?: File): VideoProcessor {
+    const processor = new VideoProcessor(this.videoEditor, this.uploadManager, this.eventBus);
+    if (videoFile) {
+      processor.setVideo(videoFile);
+    }
+    return processor;
+  }
+
+  async processAndPublish(
+    videoFile: File,
+    options: {
+      columnId: string;
+      title?: string;
+      description?: string;
+      trimStartTime?: number;
+      trimEndTime?: number;
+      textWatermark?: TextWatermarkConfig;
+      imageWatermark?: ImageWatermarkConfig;
+      onProcessStep?: (step: string, index: number, total: number) => void;
+      onUploadProgress?: (progress: UploadProgress) => void;
+      draftId?: string;
+      deleteDraftOnSuccess?: boolean;
+      coverImage?: string;
+    }
+  ): Promise<PublishResult> {
+    const processor = this.createVideoProcessor(videoFile);
+
+    if (options.title) processor.setTitle(options.title);
+    if (options.description) processor.setDescription(options.description);
+    if (options.columnId) processor.setColumnId(options.columnId);
+    if (options.trimStartTime || options.trimEndTime) {
+      processor.setTrim(options.trimStartTime || 0, options.trimEndTime || 0);
+    }
+    if (options.textWatermark) processor.setTextWatermark(options.textWatermark);
+    if (options.imageWatermark) processor.setImageWatermark(options.imageWatermark);
+    if (options.draftId) processor.setDraftId(options.draftId);
+
+    await processor.process();
+
+    return processor.publish({
+      columnId: options.columnId,
+      onProgress: options.onUploadProgress,
+      deleteDraftOnSuccess: options.deleteDraftOnSuccess
+    });
+  }
+
+  async publishDraft(
+    draftId: string,
+    options: {
+      columnId?: string;
+      onUploadProgress?: (progress: UploadProgress) => void;
+      deleteDraftOnSuccess?: boolean;
+    } = {}
+  ): Promise<PublishResult> {
+    const draft = this.uploadManager.getDraft(draftId);
+    if (!draft) {
+      throw new Error('Draft not found');
+    }
+
+    if (!draft.videoFile) {
+      throw new Error('Draft video file not available');
+    }
+
+    const processor = this.createVideoProcessor(draft.videoFile);
+    await processor.loadFromDraft(draft);
+
+    if (options.columnId) {
+      processor.setColumnId(options.columnId);
+    }
+
+    const isProcessed = draft.isProcessed && draft.processedVideoFile;
+    if (!isProcessed) {
+      await processor.process();
+    }
+
+    return processor.publish({
+      onProgress: options.onUploadProgress,
+      deleteDraftOnSuccess: options.deleteDraftOnSuccess !== false
+    });
   }
 
   // ===== 上传发布模块 =====

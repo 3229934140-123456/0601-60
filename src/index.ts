@@ -12,6 +12,7 @@ export { default as VideoPicker } from './modules/VideoPicker';
 export { default as VideoRecorder } from './modules/VideoRecorder';
 export { default as VideoEditor } from './modules/VideoEditor';
 export { default as UploadManager } from './modules/UploadManager';
+export { default as VideoProcessor } from './modules/VideoProcessor';
 export { default as VideoPlayer } from './modules/VideoPlayer';
 export { default as CommentManager } from './modules/CommentManager';
 export { default as DataCallbackManager } from './modules/DataCallbackManager';

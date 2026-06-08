@@ -37,6 +37,24 @@ export interface VideoQuality {
   height?: number;
 }
 
+export interface TextWatermarkConfig {
+  text: string;
+  position: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight' | 'center';
+  opacity?: number;
+  fontSize?: number;
+  color?: string;
+  margin?: number;
+}
+
+export interface ImageWatermarkConfig {
+  imageUrl: string;
+  position: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight' | 'center';
+  opacity?: number;
+  width?: number;
+  height?: number;
+  margin?: number;
+}
+
 export interface WatermarkConfig {
   text?: string;
   imageUrl?: string;
@@ -45,6 +63,11 @@ export interface WatermarkConfig {
   fontSize?: number;
   color?: string;
   margin?: number;
+}
+
+export interface CombinedWatermarkConfig {
+  textWatermark?: TextWatermarkConfig;
+  imageWatermark?: ImageWatermarkConfig;
 }
 
 export interface RecordingConfig {
@@ -75,12 +98,28 @@ export interface UploadProgress {
 export interface Draft {
   draftId: string;
   title: string;
+  description?: string;
   videoFile: File | null;
   videoPath?: string;
+  originalVideoUrl?: string;
   coverImage?: string;
   duration?: number;
+  width?: number;
+  height?: number;
+  size?: number;
+  trimStartTime?: number;
+  trimEndTime?: number;
   watermarkConfig?: WatermarkConfig;
+  textWatermark?: TextWatermarkConfig;
+  imageWatermark?: ImageWatermarkConfig;
   columnId?: string;
+  processedVideoFile?: File | null;
+  processedCoverImage?: string;
+  processedDuration?: number;
+  processedWidth?: number;
+  processedHeight?: number;
+  processedSize?: number;
+  isProcessed?: boolean;
   createdAt: number;
   updatedAt: number;
   [key: string]: any;
@@ -146,7 +185,35 @@ export interface EditResult {
   duration: number;
   width: number;
   height: number;
+  size: number;
   watermarkApplied: boolean;
+}
+
+export interface ProcessResult {
+  videoFile: File;
+  coverImage: string;
+  duration: number;
+  width: number;
+  height: number;
+  size: number;
+  hasTrim: boolean;
+  hasTextWatermark: boolean;
+  hasImageWatermark: boolean;
+}
+
+export interface PublishWorkflowOptions {
+  videoFile?: File;
+  title?: string;
+  description?: string;
+  columnId?: string;
+  trimStartTime?: number;
+  trimEndTime?: number;
+  textWatermark?: TextWatermarkConfig;
+  imageWatermark?: ImageWatermarkConfig;
+  coverImage?: string;
+  draftId?: string;
+  onProgress?: (progress: UploadProgress) => void;
+  onProcessProgress?: (step: number, total: number, stepName: string) => void;
 }
 
 export interface PublishResult {

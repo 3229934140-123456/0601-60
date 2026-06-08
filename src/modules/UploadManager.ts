@@ -49,6 +49,17 @@ class UploadManager {
       fileName: videoFile.name
     });
 
+    const initialProgress: UploadProgress = {
+      loaded: 0,
+      total: videoFile.size,
+      percent: 0,
+      speed: 0,
+      videoId
+    };
+
+    options.onProgress?.(initialProgress);
+    this.eventBus.emit('uploadProgress', initialProgress);
+
     if (!this.config.uploadUrl) {
       return new Promise((resolve, reject) => {
         let loaded = 0;
@@ -220,6 +231,8 @@ class UploadManager {
       coverImage?: string;
       metadata?: Record<string, any>;
       onProgress?: (progress: UploadProgress) => void;
+      draftId?: string;
+      deleteDraftOnSuccess?: boolean;
     } = {}
   ): Promise<PublishResult> {
     try {
@@ -249,6 +262,10 @@ class UploadManager {
         createdAt: Date.now()
       };
 
+      if (options.draftId && options.deleteDraftOnSuccess !== false) {
+        this.deleteDraft(options.draftId);
+      }
+
       this.eventBus.emit('publishSuccess', { videoId, videoInfo });
 
       return {
@@ -277,6 +294,8 @@ class UploadManager {
       description?: string;
       coverImage?: string;
       onProgress?: (progress: UploadProgress) => void;
+      draftId?: string;
+      deleteDraftOnSuccess?: boolean;
     } = {}
   ): Promise<PublishResult> {
     return this.uploadWithProgress(videoFile, {
@@ -284,7 +303,9 @@ class UploadManager {
       title: options.title,
       description: options.description,
       coverImage: options.coverImage,
-      onProgress: options.onProgress
+      onProgress: options.onProgress,
+      draftId: options.draftId,
+      deleteDraftOnSuccess: options.deleteDraftOnSuccess
     });
   }
 

@@ -1,4 +1,11 @@
-import { WatermarkConfig, EditResult } from '../types';
+import {
+  WatermarkConfig,
+  TextWatermarkConfig,
+  ImageWatermarkConfig,
+  CombinedWatermarkConfig,
+  EditResult,
+  ProcessResult
+} from '../types';
 import { generateVideoThumbnail, generateId } from '../utils';
 
 class VideoEditor {
@@ -23,18 +30,83 @@ class VideoEditor {
     videoFile: File,
     watermarkConfig: WatermarkConfig
   ): Promise<EditResult> {
+    const combined: CombinedWatermarkConfig = {};
+    if (watermarkConfig.text) {
+      combined.textWatermark = {
+        text: watermarkConfig.text,
+        position: watermarkConfig.position,
+        opacity: watermarkConfig.opacity,
+        fontSize: watermarkConfig.fontSize,
+        color: watermarkConfig.color,
+        margin: watermarkConfig.margin
+      };
+    }
+    if (watermarkConfig.imageUrl) {
+      combined.imageWatermark = {
+        imageUrl: watermarkConfig.imageUrl,
+        position: watermarkConfig.position,
+        opacity: watermarkConfig.opacity,
+        margin: watermarkConfig.margin
+      };
+    }
+
     return this.processVideo(videoFile, {
-      watermark: watermarkConfig,
+      watermark: combined,
       startTime: 0,
       endTime: 0
-    });
+    }).then(result => ({
+      ...result,
+      watermarkApplied: !!(combined.textWatermark || combined.imageWatermark)
+    }));
+  }
+
+  async addTextWatermark(
+    videoFile: File,
+    config: TextWatermarkConfig
+  ): Promise<EditResult> {
+    return this.processVideo(videoFile, {
+      watermark: { textWatermark: config },
+      startTime: 0,
+      endTime: 0
+    }).then(result => ({
+      ...result,
+      watermarkApplied: true
+    }));
+  }
+
+  async addImageWatermark(
+    videoFile: File,
+    config: ImageWatermarkConfig
+  ): Promise<EditResult> {
+    return this.processVideo(videoFile, {
+      watermark: { imageWatermark: config },
+      startTime: 0,
+      endTime: 0
+    }).then(result => ({
+      ...result,
+      watermarkApplied: true
+    }));
+  }
+
+  async addCombinedWatermark(
+    videoFile: File,
+    config: CombinedWatermarkConfig
+  ): Promise<EditResult> {
+    return this.processVideo(videoFile, {
+      watermark: config,
+      startTime: 0,
+      endTime: 0
+    }).then(result => ({
+      ...result,
+      watermarkApplied: !!(config.textWatermark || config.imageWatermark)
+    }));
   }
 
   async trimVideo(
     videoFile: File,
     startTime: number,
     endTime: number
-  ): Promise<{ videoFile: File; duration: number; coverImage: string; width: number; height: number }> {
+  ): Promise<{ videoFile: File; duration: number; coverImage: string; width: number; height: number; size: number }> {
     const result = await this.processVideo(videoFile, {
       startTime,
       endTime,
@@ -46,14 +118,79 @@ class VideoEditor {
       duration: result.duration,
       coverImage: result.coverImage,
       width: result.width,
-      height: result.height
+      height: result.height,
+      size: result.size
+    };
+  }
+
+  async processVideoFull(
+    videoFile: File,
+    options: {
+      trimStartTime?: number;
+      trimEndTime?: number;
+      textWatermark?: TextWatermarkConfig;
+      imageWatermark?: ImageWatermarkConfig;
+    }
+  ): Promise<ProcessResult> {
+    const watermark: CombinedWatermarkConfig = {
+      textWatermark: options.textWatermark,
+      imageWatermark: options.imageWatermark
+    };
+
+    const hasWatermark = !!(watermark.textWatermark || watermark.imageWatermark);
+    const hasTrim = !!(options.trimStartTime || options.trimEndTime);
+
+    if (!hasWatermark && !hasTrim) {
+      const coverImage = await this.generateCover(videoFile, 0.5);
+      const video = document.createElement('video');
+      const url = URL.createObjectURL(videoFile);
+
+      return new Promise((resolve, reject) => {
+        video.onloadedmetadata = () => {
+          URL.revokeObjectURL(url);
+          resolve({
+            videoFile,
+            coverImage,
+            duration: video.duration,
+            width: video.videoWidth,
+            height: video.videoHeight,
+            size: videoFile.size,
+            hasTrim: false,
+            hasTextWatermark: false,
+            hasImageWatermark: false
+          });
+        };
+        video.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Failed to load video'));
+        };
+        video.src = url;
+      });
+    }
+
+    const result = await this.processVideo(videoFile, {
+      startTime: options.trimStartTime || 0,
+      endTime: options.trimEndTime || 0,
+      watermark
+    });
+
+    return {
+      videoFile: result.videoFile,
+      coverImage: result.coverImage,
+      duration: result.duration,
+      width: result.width,
+      height: result.height,
+      size: result.size,
+      hasTrim,
+      hasTextWatermark: !!watermark.textWatermark,
+      hasImageWatermark: !!watermark.imageWatermark
     };
   }
 
   private async processVideo(
     videoFile: File,
     options: {
-      watermark: WatermarkConfig | null;
+      watermark: CombinedWatermarkConfig | null;
       startTime: number;
       endTime: number;
     }
@@ -85,7 +222,9 @@ class VideoEditor {
       const totalDuration = video.duration;
 
       const startTime = options.startTime || 0;
-      const endTime = options.endTime && options.endTime > 0 ? Math.min(options.endTime, totalDuration) : totalDuration;
+      const endTime = options.endTime && options.endTime > 0
+        ? Math.min(options.endTime, totalDuration)
+        : totalDuration;
       const targetDuration = endTime - startTime;
 
       const canvas = document.createElement('canvas');
@@ -93,9 +232,9 @@ class VideoEditor {
       canvas.height = height;
       const ctx = canvas.getContext('2d')!;
 
-      let watermarkImg: HTMLImageElement | null = null;
-      if (options.watermark?.imageUrl) {
-        watermarkImg = await this.loadImage(options.watermark.imageUrl);
+      let imageWatermarkImg: HTMLImageElement | null = null;
+      if (options.watermark?.imageWatermark) {
+        imageWatermarkImg = await this.loadImage(options.watermark.imageWatermark.imageUrl);
       }
 
       const canvasStream = canvas.captureStream(30);
@@ -167,10 +306,22 @@ class VideoEditor {
         ctx.drawImage(video, 0, 0, width, height);
 
         if (options.watermark) {
-          if (watermarkImg) {
-            this.drawWatermarkImage(ctx, watermarkImg, options.watermark, width, height);
-          } else if (options.watermark.text) {
-            this.drawWatermarkText(ctx, options.watermark.text, options.watermark, width, height);
+          if (imageWatermarkImg && options.watermark.imageWatermark) {
+            this.drawImageWatermark(
+              ctx,
+              imageWatermarkImg,
+              options.watermark.imageWatermark,
+              width,
+              height
+            );
+          }
+          if (options.watermark.textWatermark) {
+            this.drawTextWatermark(
+              ctx,
+              options.watermark.textWatermark,
+              width,
+              height
+            );
           }
         }
 
@@ -195,9 +346,11 @@ class VideoEditor {
         { type: mimeType }
       );
 
-      const processedUrl = URL.createObjectURL(processedFile);
-      const coverImage = await this.generateCover(processedFile, 0.5);
-      URL.revokeObjectURL(processedUrl);
+      const coverImage = await this.generateCoverWithWatermark(
+        processedFile,
+        options.watermark || undefined,
+        0.5
+      );
 
       URL.revokeObjectURL(videoUrl);
 
@@ -207,7 +360,8 @@ class VideoEditor {
         duration: targetDuration,
         width,
         height,
-        watermarkApplied: !!options.watermark
+        size: processedFile.size,
+        watermarkApplied: !!(options.watermark?.textWatermark || options.watermark?.imageWatermark)
       };
     } finally {
       this.cleanupProcessing();
@@ -260,6 +414,53 @@ class VideoEditor {
     try {
       const thumbnail = await generateVideoThumbnail(url, time);
       return thumbnail;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async generateCoverWithWatermark(
+    videoFile: File,
+    watermarkConfig: CombinedWatermarkConfig | undefined,
+    time: number = 1
+  ): Promise<string> {
+    const url = URL.createObjectURL(videoFile);
+
+    try {
+      const video = document.createElement('video');
+      video.src = url;
+
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = reject;
+      });
+
+      video.currentTime = Math.min(time, video.duration);
+      await new Promise<void>((resolve) => {
+        video.onseeked = () => resolve();
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d')!;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      if (watermarkConfig) {
+        if (watermarkConfig.imageWatermark) {
+          try {
+            const img = await this.loadImage(watermarkConfig.imageWatermark.imageUrl);
+            this.drawImageWatermark(ctx, img, watermarkConfig.imageWatermark, canvas.width, canvas.height);
+          } catch (e) {}
+        }
+        if (watermarkConfig.textWatermark) {
+          this.drawTextWatermark(ctx, watermarkConfig.textWatermark, canvas.width, canvas.height);
+        }
+      }
+
+      URL.revokeObjectURL(url);
+      return canvas.toDataURL('image/jpeg', 0.85);
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -324,15 +525,27 @@ class VideoEditor {
     });
   }
 
-  private drawWatermarkImage(
+  private drawImageWatermark(
     ctx: CanvasRenderingContext2D,
     img: HTMLImageElement,
-    config: WatermarkConfig,
+    config: ImageWatermarkConfig,
     canvasWidth: number,
     canvasHeight: number
   ): void {
-    const watermarkWidth = Math.min(canvasWidth * 0.2, img.width);
-    const watermarkHeight = (watermarkWidth / img.width) * img.height;
+    let watermarkWidth: number;
+    let watermarkHeight: number;
+
+    if (config.width) {
+      watermarkWidth = config.width;
+      watermarkHeight = config.height || (watermarkWidth / img.width) * img.height;
+    } else if (config.height) {
+      watermarkHeight = config.height;
+      watermarkWidth = (watermarkHeight / img.height) * img.width;
+    } else {
+      watermarkWidth = Math.min(canvasWidth * 0.2, img.width);
+      watermarkHeight = (watermarkWidth / img.width) * img.height;
+    }
+
     const margin = config.margin ?? 20;
 
     let x = margin;
@@ -360,10 +573,9 @@ class VideoEditor {
     ctx.globalAlpha = 1;
   }
 
-  private drawWatermarkText(
+  private drawTextWatermark(
     ctx: CanvasRenderingContext2D,
-    text: string,
-    config: WatermarkConfig,
+    config: TextWatermarkConfig,
     canvasWidth: number,
     canvasHeight: number
   ): void {
@@ -372,7 +584,7 @@ class VideoEditor {
     ctx.fillStyle = config.color ?? 'rgba(255, 255, 255, 0.8)';
     ctx.globalAlpha = config.opacity ?? 0.8;
 
-    const metrics = ctx.measureText(text);
+    const metrics = ctx.measureText(config.text);
     const textWidth = metrics.width;
     const textHeight = fontSize;
     const margin = config.margin ?? 20;
@@ -397,13 +609,13 @@ class VideoEditor {
         break;
     }
 
-    ctx.fillText(text, x, y);
+    ctx.fillText(config.text, x, y);
     ctx.globalAlpha = 1;
   }
 
   async applyWatermarkToImage(
     imageSrc: string,
-    config: WatermarkConfig
+    config: WatermarkConfig | CombinedWatermarkConfig
   ): Promise<string> {
     const img = await this.loadImage(imageSrc);
     const canvas = document.createElement('canvas');
@@ -414,11 +626,39 @@ class VideoEditor {
 
     ctx.drawImage(img, 0, 0);
 
-    if (config.imageUrl) {
-      const watermarkImg = await this.loadImage(config.imageUrl);
-      this.drawWatermarkImage(ctx, watermarkImg, config, canvas.width, canvas.height);
-    } else if (config.text) {
-      this.drawWatermarkText(ctx, config.text, config, canvas.width, canvas.height);
+    const combined = config as CombinedWatermarkConfig;
+    const legacy = config as WatermarkConfig;
+
+    if (combined.textWatermark || combined.imageWatermark) {
+      if (combined.imageWatermark) {
+        const watermarkImg = await this.loadImage(combined.imageWatermark.imageUrl);
+        this.drawImageWatermark(ctx, watermarkImg, combined.imageWatermark, canvas.width, canvas.height);
+      }
+      if (combined.textWatermark) {
+        this.drawTextWatermark(ctx, combined.textWatermark, canvas.width, canvas.height);
+      }
+    } else if (legacy.text || legacy.imageUrl) {
+      if (legacy.imageUrl) {
+        const watermarkImg = await this.loadImage(legacy.imageUrl);
+        const imgConfig: ImageWatermarkConfig = {
+          imageUrl: legacy.imageUrl,
+          position: legacy.position,
+          opacity: legacy.opacity,
+          margin: legacy.margin
+        };
+        this.drawImageWatermark(ctx, watermarkImg, imgConfig, canvas.width, canvas.height);
+      }
+      if (legacy.text) {
+        const textConfig: TextWatermarkConfig = {
+          text: legacy.text,
+          position: legacy.position,
+          opacity: legacy.opacity,
+          fontSize: legacy.fontSize,
+          color: legacy.color,
+          margin: legacy.margin
+        };
+        this.drawTextWatermark(ctx, textConfig, canvas.width, canvas.height);
+      }
     }
 
     return canvas.toDataURL('image/jpeg', 0.9);
