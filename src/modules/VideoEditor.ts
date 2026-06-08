@@ -305,24 +305,14 @@ class VideoEditor {
 
         ctx.drawImage(video, 0, 0, width, height);
 
-        if (options.watermark) {
-          if (imageWatermarkImg && options.watermark.imageWatermark) {
-            this.drawImageWatermark(
-              ctx,
-              imageWatermarkImg,
-              options.watermark.imageWatermark,
-              width,
-              height
-            );
-          }
-          if (options.watermark.textWatermark) {
-            this.drawTextWatermark(
-              ctx,
-              options.watermark.textWatermark,
-              width,
-              height
-            );
-          }
+        if (options.watermark && (options.watermark.textWatermark || options.watermark.imageWatermark)) {
+          this.drawCombinedWatermark(
+            ctx,
+            width,
+            height,
+            options.watermark,
+            imageWatermarkImg
+          );
         }
 
         if (video.currentTime < endTime && !video.ended) {
@@ -447,16 +437,14 @@ class VideoEditor {
 
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      if (watermarkConfig) {
+      if (watermarkConfig && (watermarkConfig.textWatermark || watermarkConfig.imageWatermark)) {
+        let watermarkImg: HTMLImageElement | null = null;
         if (watermarkConfig.imageWatermark) {
           try {
-            const img = await this.loadImage(watermarkConfig.imageWatermark.imageUrl);
-            this.drawImageWatermark(ctx, img, watermarkConfig.imageWatermark, canvas.width, canvas.height);
+            watermarkImg = await this.loadImage(watermarkConfig.imageWatermark.imageUrl);
           } catch (e) {}
         }
-        if (watermarkConfig.textWatermark) {
-          this.drawTextWatermark(ctx, watermarkConfig.textWatermark, canvas.width, canvas.height);
-        }
+        this.drawCombinedWatermark(ctx, canvas.width, canvas.height, watermarkConfig, watermarkImg);
       }
 
       URL.revokeObjectURL(url);
@@ -613,6 +601,130 @@ class VideoEditor {
     ctx.globalAlpha = 1;
   }
 
+  private drawCombinedWatermark(
+    ctx: CanvasRenderingContext2D,
+    canvasWidth: number,
+    canvasHeight: number,
+    config: CombinedWatermarkConfig,
+    imageImg: HTMLImageElement | null
+  ): void {
+    const textConfig = config.textWatermark;
+    const imageConfig = config.imageWatermark;
+
+    if (!textConfig && !imageConfig) return;
+
+    if (textConfig && imageConfig) {
+      const textPos = textConfig.position || 'bottomRight';
+      const imagePos = imageConfig.position || 'bottomRight';
+
+      if (textPos === imagePos) {
+        this.drawStackedWatermark(
+          ctx,
+          canvasWidth,
+          canvasHeight,
+          imageConfig,
+          imageImg,
+          textConfig,
+          textPos
+        );
+        return;
+      }
+    }
+
+    if (imageConfig && imageImg) {
+      this.drawImageWatermark(ctx, imageImg, imageConfig, canvasWidth, canvasHeight);
+    }
+    if (textConfig) {
+      this.drawTextWatermark(ctx, textConfig, canvasWidth, canvasHeight);
+    }
+  }
+
+  private drawStackedWatermark(
+    ctx: CanvasRenderingContext2D,
+    canvasWidth: number,
+    canvasHeight: number,
+    imageConfig: ImageWatermarkConfig,
+    imageImg: HTMLImageElement | null,
+    textConfig: TextWatermarkConfig,
+    position: string
+  ): void {
+    const margin = imageConfig.margin ?? textConfig.margin ?? 20;
+    const gap = 8;
+
+    let imgWidth = 0;
+    let imgHeight = 0;
+    if (imageImg) {
+      if (imageConfig.width) {
+        imgWidth = imageConfig.width;
+        imgHeight = imageConfig.height || (imgWidth / imageImg.width) * imageImg.height;
+      } else if (imageConfig.height) {
+        imgHeight = imageConfig.height;
+        imgWidth = (imgHeight / imageImg.height) * imageImg.width;
+      } else {
+        imgWidth = Math.min(canvasWidth * 0.2, imageImg.width);
+        imgHeight = (imgWidth / imageImg.width) * imageImg.height;
+      }
+    }
+
+    const fontSize = textConfig.fontSize ?? Math.floor(canvasWidth * 0.04);
+    ctx.font = `${fontSize}px Arial, sans-serif`;
+    const textMetrics = ctx.measureText(textConfig.text);
+    const textWidth = textMetrics.width;
+    const textHeight = fontSize;
+
+    const totalWidth = Math.max(imgWidth, textWidth);
+    const totalHeight = imgHeight + (imgHeight > 0 ? gap : 0) + textHeight;
+
+    let x = margin;
+    let y = margin;
+
+    switch (position) {
+      case 'topLeft':
+        x = margin;
+        y = margin;
+        break;
+      case 'topRight':
+        x = canvasWidth - totalWidth - margin;
+        y = margin;
+        break;
+      case 'bottomLeft':
+        x = margin;
+        y = canvasHeight - totalHeight - margin;
+        break;
+      case 'bottomRight':
+        x = canvasWidth - totalWidth - margin;
+        y = canvasHeight - totalHeight - margin;
+        break;
+      case 'center':
+        x = (canvasWidth - totalWidth) / 2;
+        y = (canvasHeight - totalHeight) / 2;
+        break;
+    }
+
+    let imgX = x;
+    let textX = x;
+
+    if (imgWidth < totalWidth) {
+      imgX = x + (totalWidth - imgWidth) / 2;
+    }
+    if (textWidth < totalWidth) {
+      textX = x + (totalWidth - textWidth) / 2;
+    }
+
+    if (imageImg && imgWidth > 0 && imgHeight > 0) {
+      ctx.globalAlpha = imageConfig.opacity ?? 0.6;
+      ctx.drawImage(imageImg, imgX, y, imgWidth, imgHeight);
+      ctx.globalAlpha = 1;
+    }
+
+    const textY = y + imgHeight + (imgHeight > 0 ? gap : 0) + textHeight;
+    ctx.font = `${fontSize}px Arial, sans-serif`;
+    ctx.fillStyle = textConfig.color ?? 'rgba(255, 255, 255, 0.8)';
+    ctx.globalAlpha = textConfig.opacity ?? 0.8;
+    ctx.fillText(textConfig.text, textX, textY);
+    ctx.globalAlpha = 1;
+  }
+
   async applyWatermarkToImage(
     imageSrc: string,
     config: WatermarkConfig | CombinedWatermarkConfig
@@ -629,27 +741,30 @@ class VideoEditor {
     const combined = config as CombinedWatermarkConfig;
     const legacy = config as WatermarkConfig;
 
+    let watermarkConfig: CombinedWatermarkConfig = {};
+    let watermarkImg: HTMLImageElement | null = null;
+
     if (combined.textWatermark || combined.imageWatermark) {
+      watermarkConfig = combined;
       if (combined.imageWatermark) {
-        const watermarkImg = await this.loadImage(combined.imageWatermark.imageUrl);
-        this.drawImageWatermark(ctx, watermarkImg, combined.imageWatermark, canvas.width, canvas.height);
-      }
-      if (combined.textWatermark) {
-        this.drawTextWatermark(ctx, combined.textWatermark, canvas.width, canvas.height);
+        try {
+          watermarkImg = await this.loadImage(combined.imageWatermark.imageUrl);
+        } catch (e) {}
       }
     } else if (legacy.text || legacy.imageUrl) {
       if (legacy.imageUrl) {
-        const watermarkImg = await this.loadImage(legacy.imageUrl);
-        const imgConfig: ImageWatermarkConfig = {
-          imageUrl: legacy.imageUrl,
-          position: legacy.position,
-          opacity: legacy.opacity,
-          margin: legacy.margin
-        };
-        this.drawImageWatermark(ctx, watermarkImg, imgConfig, canvas.width, canvas.height);
+        try {
+          watermarkImg = await this.loadImage(legacy.imageUrl);
+          watermarkConfig.imageWatermark = {
+            imageUrl: legacy.imageUrl,
+            position: legacy.position,
+            opacity: legacy.opacity,
+            margin: legacy.margin
+          };
+        } catch (e) {}
       }
       if (legacy.text) {
-        const textConfig: TextWatermarkConfig = {
+        watermarkConfig.textWatermark = {
           text: legacy.text,
           position: legacy.position,
           opacity: legacy.opacity,
@@ -657,8 +772,11 @@ class VideoEditor {
           color: legacy.color,
           margin: legacy.margin
         };
-        this.drawTextWatermark(ctx, textConfig, canvas.width, canvas.height);
       }
+    }
+
+    if (watermarkConfig.textWatermark || watermarkConfig.imageWatermark) {
+      this.drawCombinedWatermark(ctx, canvas.width, canvas.height, watermarkConfig, watermarkImg);
     }
 
     return canvas.toDataURL('image/jpeg', 0.9);

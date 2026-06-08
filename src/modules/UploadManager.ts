@@ -44,11 +44,6 @@ class UploadManager {
   ): Promise<{ videoId: string; videoUrl: string }> {
     const videoId = options.videoId || generateId('video');
 
-    this.eventBus.emit('uploadStart', {
-      videoId,
-      fileName: videoFile.name
-    });
-
     const initialProgress: UploadProgress = {
       loaded: 0,
       total: videoFile.size,
@@ -57,27 +52,53 @@ class UploadManager {
       videoId
     };
 
+    const uploadTask: UploadTask = {
+      file: videoFile,
+      progress: initialProgress
+    };
+    this.uploads.set(videoId, uploadTask);
+
+    this.eventBus.emit('uploadStart', {
+      videoId,
+      fileName: videoFile.name
+    });
+
     options.onProgress?.(initialProgress);
     this.eventBus.emit('uploadProgress', initialProgress);
+
+    const updateProgress = (progress: UploadProgress) => {
+      uploadTask.progress = progress;
+      this.uploads.set(videoId, uploadTask);
+      options.onProgress?.(progress);
+      this.eventBus.emit('uploadProgress', progress);
+    };
+
+    const finishUpload = (videoUrl: string) => {
+      const finalProgress: UploadProgress = {
+        loaded: videoFile.size,
+        total: videoFile.size,
+        percent: 100,
+        speed: 0,
+        videoId
+      };
+      uploadTask.progress = finalProgress;
+      this.uploads.set(videoId, uploadTask);
+      options.onProgress?.(finalProgress);
+      this.eventBus.emit('uploadProgress', finalProgress);
+
+      this.uploads.delete(videoId);
+
+      this.eventBus.emit('uploadComplete', {
+        videoId,
+        videoUrl
+      });
+    };
 
     if (!this.config.uploadUrl) {
       return new Promise((resolve, reject) => {
         let loaded = 0;
         const total = videoFile.size;
         const startTime = Date.now();
-
-        const initialProgress: UploadProgress = {
-          loaded: 0,
-          total,
-          percent: 0,
-          speed: 0,
-          videoId
-        };
-
-        const mockTask: UploadTask = {
-          file: videoFile,
-          progress: initialProgress
-        };
 
         const interval = setInterval(() => {
           loaded = Math.min(loaded + Math.floor(total * 0.05), total);
@@ -93,27 +114,18 @@ class UploadManager {
             videoId
           };
 
-          mockTask.progress = progress;
-          this.uploads.set(videoId, mockTask);
-
-          options.onProgress?.(progress);
-          this.eventBus.emit('uploadProgress', progress);
+          updateProgress(progress);
 
           if (loaded >= total) {
             clearInterval(interval);
-            mockTask.mockTimer = undefined;
-            this.uploads.delete(videoId);
-
-            this.eventBus.emit('uploadComplete', {
-              videoId,
-              videoUrl: `blob://${videoId}`
-            });
+            uploadTask.mockTimer = undefined;
+            finishUpload(`blob://${videoId}`);
             resolve({ videoId, videoUrl: `blob://${videoId}` });
           }
         }, 200);
 
-        mockTask.mockTimer = interval;
-        this.uploads.set(videoId, mockTask);
+        uploadTask.mockTimer = interval;
+        this.uploads.set(videoId, uploadTask);
       });
     }
 
@@ -145,14 +157,7 @@ class UploadManager {
             videoId
           };
 
-          const uploadTask = this.uploads.get(videoId);
-          if (uploadTask) {
-            uploadTask.progress = progress;
-            this.uploads.set(videoId, uploadTask);
-          }
-
-          options.onProgress?.(progress);
-          this.eventBus.emit('uploadProgress', progress);
+          updateProgress(progress);
         }
       });
 
@@ -160,22 +165,13 @@ class UploadManager {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const response = JSON.parse(xhr.responseText);
-            this.eventBus.emit('uploadComplete', {
-              videoId,
-              videoUrl: response.videoUrl || response.url
-            });
-            this.uploads.delete(videoId);
-            resolve({
-              videoId,
-              videoUrl: response.videoUrl || response.url
-            });
+            const videoUrl = response.videoUrl || response.url || xhr.responseText;
+            finishUpload(videoUrl);
+            resolve({ videoId, videoUrl });
           } catch (e) {
-            this.eventBus.emit('uploadComplete', {
-              videoId,
-              videoUrl: xhr.responseText
-            });
-            this.uploads.delete(videoId);
-            resolve({ videoId, videoUrl: xhr.responseText });
+            const videoUrl = xhr.responseText;
+            finishUpload(videoUrl);
+            resolve({ videoId, videoUrl });
           }
         } else {
           const error = `Upload failed with status ${xhr.status}`;
@@ -205,17 +201,8 @@ class UploadManager {
         });
       }
 
-      this.uploads.set(videoId, {
-        file: videoFile,
-        xhr,
-        progress: {
-          loaded: 0,
-          total: videoFile.size,
-          percent: 0,
-          speed: 0,
-          videoId
-        }
-      });
+      uploadTask.xhr = xhr;
+      this.uploads.set(videoId, uploadTask);
 
       xhr.send(formData);
     });

@@ -298,6 +298,7 @@ class EduShortVideoSDK {
     draftId: string,
     options: {
       columnId?: string;
+      videoFile?: File;
       onUploadProgress?: (progress: UploadProgress) => void;
       deleteDraftOnSuccess?: boolean;
     } = {}
@@ -307,20 +308,16 @@ class EduShortVideoSDK {
       throw new Error('Draft not found');
     }
 
-    if (!draft.videoFile) {
-      throw new Error('Draft video file not available');
+    const videoFile = options.videoFile || draft.videoFile || undefined;
+    if (!videoFile) {
+      throw new Error('Video file not available, please provide videoFile option');
     }
 
-    const processor = this.createVideoProcessor(draft.videoFile);
-    await processor.loadFromDraft(draft);
+    const processor = this.createVideoProcessor(videoFile);
+    await processor.loadFromDraft(draft, videoFile);
 
     if (options.columnId) {
       processor.setColumnId(options.columnId);
-    }
-
-    const isProcessed = draft.isProcessed && draft.processedVideoFile;
-    if (!isProcessed) {
-      await processor.process();
     }
 
     return processor.publish({

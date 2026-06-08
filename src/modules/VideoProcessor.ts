@@ -249,14 +249,18 @@ class VideoProcessor {
     onProgress?: (progress: UploadProgress) => void;
     deleteDraftOnSuccess?: boolean;
   }): Promise<PublishResult> {
-    const videoFile = this.processedVideoFile || this.originalVideoFile;
-    if (!videoFile) {
+    if (!this.originalVideoFile) {
       throw new Error('No video file to publish');
     }
 
+    if (!this.isProcessed) {
+      await this.process();
+    }
+
+    const videoFile = this.processedVideoFile || this.originalVideoFile;
     const columnId = options?.columnId || this.columnId;
 
-    return this.uploadManager.publishToColumn(videoFile, columnId, {
+    const result = await this.uploadManager.publishToColumn(videoFile, columnId, {
       title: this.title,
       description: this.description,
       coverImage: this.processedCoverImage,
@@ -264,6 +268,19 @@ class VideoProcessor {
       draftId: this.draftId || undefined,
       deleteDraftOnSuccess: options?.deleteDraftOnSuccess
     });
+
+    if (result.success && result.videoInfo) {
+      result.videoInfo = {
+        ...result.videoInfo,
+        duration: this.processedDuration,
+        width: this.processedWidth,
+        height: this.processedHeight,
+        size: this.processedSize || videoFile.size,
+        coverUrl: this.processedCoverImage
+      };
+    }
+
+    return result;
   }
 
   async saveAsDraft(draftId?: string): Promise<Draft> {
@@ -306,7 +323,7 @@ class VideoProcessor {
     return draft;
   }
 
-  async loadFromDraft(draft: Draft): Promise<void> {
+  async loadFromDraft(draft: Draft, videoFile?: File): Promise<void> {
     this.draftId = draft.draftId;
     this.title = draft.title || '';
     this.description = draft.description || '';
@@ -316,7 +333,9 @@ class VideoProcessor {
     this.textWatermark = draft.textWatermark;
     this.imageWatermark = draft.imageWatermark;
 
-    if (draft.videoFile) {
+    if (videoFile) {
+      this.originalVideoFile = videoFile;
+    } else if (draft.videoFile) {
       this.originalVideoFile = draft.videoFile;
     }
 
@@ -332,6 +351,10 @@ class VideoProcessor {
       this.processedVideoFile = null;
       this.isProcessed = false;
     }
+  }
+
+  hasVideoFile(): boolean {
+    return this.originalVideoFile !== null;
   }
 
   reset(): void {
